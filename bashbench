@@ -75,8 +75,10 @@ run_in_parallel() {
   done
   wait
   local -r -i end_unix_ns="$(date +%s%N)"
-  # Calculate work done / duration
-  echo "$concurrency * $repetition / (($end_unix_ns - $start_unix_ns) / 1000 / 1000 / 1000)" | bc -l
+  # Calculate work done / duration.
+  rate="$(echo "$concurrency * $repetition / (($end_unix_ns - $start_unix_ns) / 1000 / 1000 / 1000)" | bc -l)"
+  # Round down to 3 decimal points.
+  echo "scale=3; $rate/1" | bc -l
 }
 
 # bench_int benchmarks integer arithmetic performance using a mix of arithmetic
