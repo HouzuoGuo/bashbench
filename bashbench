@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+export LANG=C LC_ALL=C
+export PS4='#${BASH_SOURCE}:${LINENO} [${SHLVL},${BASH_SUBSHELL},$?]: '
+
+# Program global variables
+declare tmp_dir=''
+
+# log takes a string and arguments and prints a formatted string to stderr.
+log() {
+  local -r fmt_str="$1"
+  shift
+  # shellcheck disable=SC2059
+  printf "$0 ${FUNCNAME[1]}: $fmt_str\n" "${@}" >&2 || true
+}
+
+# handle_exit is invoked upon program exit - regardless of whether it originates
+# from a signal or just normal termination.
+handle_exit() {
+  local -r -i last_status="$?"
+  if [ "$tmp_dir" ]; then
+    rm -rf "$tmp_dir" || true
+  fi
+  readarray -t bg_jobs < <(jobs -p)
+  if [ "${#bg_jobs[@]}" -gt 0 ]; then
+    kill "${bg_jobs[@]}" &>/dev/null || true
+  fi
+  log "Exiting now with status %i" "$last_status"
+  exit "$last_status"
+}
+trap handle_exit INT HUP TERM QUIT EXIT
+
+# print_usage prints the usage instructions of this program.
+print_usage() {
+  local -i exit_status="$1"
+  cat <<EOF
+NAME
+bashbench - benchmark a Linux system using the bash shell
+
+SYNOPSIS
+$0 [-c concurrency]
+
+OPTIONS
+-c, --concurrency=number The number of concurrent benchmark routines to run.
+                         The default is the number of CPUs on the system.
+
+NOTES
+A benchmark run will take approximately 30 seconds and uses little memory and
+disk space.
+
+The unit of benchmark result "loops/second" is only meaningful for comparison
+between Linux systems that have similar software configuration (e.g. similar
+bash and Linux kernal versions).
+EOF
+  exit "$exit_status"
+}
+
+# num_cpus returns the number of CPUs installed on the system.
+# It returns 1 if the number cannot be determined.
+num_cpus() {
+  declare -a cpus=(/sys/bus/cpu/devices/*)
+  echo "${#cpus[@]}"
+}
+
+# run_in_parallel invokes the input function in parallel and returns the average
+# number of invocations per second.
+# Translated into system performance, a higher number is better.
+run_in_parallel() {
+  local -r func="$1"
+  local -r -i repetition="$2" concurrency="$3"
+  local -r -i start_unix_ns="$(date +%s%N)"
+  for ((i = 0; i < concurrency; i++)); do
+    for ((j = 0; j < repetition; j++)); do "$func"; done &
+  done
+  wait
+  local -r -i end_unix_ns="$(date +%s%N)"
+  # Calculate work done / duration
+  echo "$concurrency * $repetition / (($end_unix_ns - $start_unix_ns) / 1000 / 1000 / 1000)" | bc -l
+}
+
+# bench_int benchmarks integer arithmetic performance using a mix of arithmetic
+# calculations.
+# The function returns nothing.
+bench_int() {
+  local -i sum=0
+  local -i dividend=$((RANDOM + RANDOM - RANDOM))
+  if [ $dividend -eq 0 ]; then
+    dividend=12
+  fi
+  # The arithmetic expression must have a side effect, otherwise bash will
+  # optimise it into nop.
+  sum=$((
+    (RANDOM * RANDOM / dividend) ** (1 + RANDOM % 3) +
+    (RANDOM * RANDOM / dividend) ** (1 + RANDOM % 3) -
+    (RANDOM * RANDOM / dividend) ** (1 + RANDOM % 3) +
+    (RANDOM * RANDOM / dividend) ** (1 + RANDOM % 3)
+  ))
+  echo "$sum" > /dev/null
+}
+
+# benchmark_fork_exec benchmarks the creation of external processes.
+# The function returns nothing.
+bench_fork_exec() {
+  command true
+}
+
+# benchmark_create_rm_files benchmarks the creation and deletion of files.
+# The function returns nothing.
+bench_create_rm_files() {
+  local tmp_file="$tmp_dir/$i"
+  true > "$tmp_file"
+  rm -f "$tmp_file"
+}
+
+# bench_mem_gymnastics benchmarks memory allocation and de-allocation.
+# The function returns nothing.
+bench_mem_gymnastics() {
+  # Constructing the long parameter list is very CPU intensive, even though the
+  # list itself only uses ~32MB of memory.
+  # Also, start a sub-shell each time # to re-allocate and then de-allocate the
+  # memory chunk, otherwise bash will apply optimisation and avoid
+  # re-allocating memory for the same list.
+  (true {1..100000})
+}
+
+main() {
+  if [ "$(uname)" != "Linux" ]; then
+    echo 'Sorry, this program only supports Linux as of now.' >&2
+    exit 1
+  fi
+  local -i concurrency
+  concurrency=$(num_cpus)
+
+  # Process CLI parameters
+  while true; do
+    if [ $# -eq 0 ]; then
+      break
+    fi
+    local arg_val=''
+    case "$1" in
+    -h|--help)
+      print_usage 0
+      ;;
+    --concurrency=*) arg_val="${1#*=}"; ;&
+    -c)
+      if [ ! "$arg_val" ]; then
+        shift
+        if [ $# -gt 0 ]; then arg_val="$1"; else print_usage 1; fi
+      fi
+      concurrency="$arg_val"
+      ;;
+    *)
+      if [ $# -ge 1 ]; then
+        echo "Unrecognised program parameter: $1" >&2
+        print_usage 1 >&2
+      fi
+      ;;
+    esac
+    shift
+  done
+
+  # Create a temporary directory for file system benchmark
+  tmp_dir="$(mktemp -d -p /tmp bashbench-XXXXXXXXX)"
+
+  echo "Benchmark has started on $(hostname), this may take about 30 seconds."
+  echo "Integer arithmetic: $(run_in_parallel bench_int 60000 "$concurrency") loops/second"
+  echo "Memory gymnastics: $(run_in_parallel bench_mem_gymnastics 50 "$concurrency") loops/second"
+  echo "Process management: $(run_in_parallel bench_fork_exec 600000 "$concurrency") loops/second"
+  echo "File management: $(run_in_parallel bench_create_rm_files 3000 "$concurrency") loops/second"
+}
+
+main "${@}"
