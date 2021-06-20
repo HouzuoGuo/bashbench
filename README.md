@@ -30,6 +30,10 @@ between Linux systems that have similar software configuration (e.g. similar
 bash and Linux kernal versions).
 ```
 
+## Screenshot
+
+<img src="https://github.com/HouzuoGuo/bashbench/raw/master/screenshot.png" alt="screenshot"/>
+
 ## Copyright and License
 
 Copyright (C) 2021 Google Inc. and contributors (Houzuo Howard Guo, etc), all
